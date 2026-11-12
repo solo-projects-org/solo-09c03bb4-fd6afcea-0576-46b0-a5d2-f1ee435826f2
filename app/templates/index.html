@@ -64,6 +64,15 @@
     .ignored strong { color: #9a6a1c; }
     details { margin-top: 8px; }
     summary { cursor: pointer; font-size: 12px; color: var(--blue); }
+    select { width: 100%; padding: 9px 10px; border: 1px solid var(--line);
+             border-radius: 7px; font-size: 14px; background: #fff; }
+    .success { background: var(--green-bg); color: var(--green-fg); border: 1px solid #b7e1c3;
+               border-radius: 8px; padding: 12px 16px; margin-bottom: 14px; font-size: 14px; }
+    .success .newver { font-size: 22px; font-weight: 700;
+                       font-family: ui-monospace, monospace; }
+    .danger { background: var(--red-bg); color: var(--red-fg); border: 1px solid #f3c2c2;
+              border-radius: 8px; padding: 12px 16px; margin-bottom: 14px; font-size: 14px; }
+    .danger .filelist { color: var(--red-fg); }
   </style>
 </head>
 <body>
@@ -113,7 +122,53 @@
         </button>
         {% endfor %}
       </div>
-      <div class="hint">样例由 Docker 镜像内 samples/ 目录提供，点击即调用后端 API 完成分析。</div>
+      <div class="hint">样例由 Docker 镜像内 samples/ 目录提供，点击即调用后端 API 完成分析。
+        健康表在 Compose 中以可写卷挂载，恢复演练后的新版本也可在此直接重放。</div>
+    </section>
+
+    <section class="card">
+      <h2>3. 本地副本恢复演练</h2>
+      <div class="hint">填写工单上的当前版本与要恢复的旧版本。工具只在可写样例的
+        _delta_log 中追加下一版 JSON，让新版本引用的文件与目标版本一致；不改旧日志、
+        不改 Parquet。新提交完整落盘后才算成功，成功后立即用上面的核查逻辑重放新版本。</div>
+      <div class="row" style="margin-top:10px">
+        <div>
+          <label for="recover-table">演练表（本地副本）</label>
+          {% if recovery_tables %}
+          <select id="recover-table">
+            {% for key, meta in recovery_tables.items() %}
+            <option value="{{ key }}" data-current="{{ meta.current_version }}"
+                    data-from="{{ meta.range[0] if meta.range else 0 }}">
+              {{ meta.label }} · 当前 v{{ meta.current_version }}
+            </option>
+            {% endfor %}
+          </select>
+          {% else %}
+          <select id="recover-table" disabled>
+            <option>无可用表</option>
+          </select>
+          {% endif %}
+        </div>
+        <div>
+          <label for="current_version">工单当前版本</label>
+          <input type="number" id="current_version" name="current_version" min="0"
+                 value="{{ initial_current_version if initial_current_version is not none else '' }}"
+                 required>
+        </div>
+        <div>
+          <label for="target_version">要恢复的旧版本</label>
+          <input type="number" id="target_version" name="target_version" min="0"
+                 value="0" required>
+        </div>
+      </div>
+      <button class="btn-primary" type="button" id="recover-btn">
+        执行恢复演练
+      </button>
+      {% if not recovery_tables %}
+      <div class="hint">未找到可写的本地副本表；请把含 _delta_log 的表目录挂载到
+        SAMPLE_ROOT，并从 v0 起保留连续 JSON 提交。</div>
+      {% endif %}
+      <div id="recover-result" style="margin-top:16px"></div>
     </section>
 
     <section id="report-root"></section>
@@ -122,6 +177,7 @@
   {% if report %}
   <script type="application/json" id="report-data">{{ report | tojson }}</script>
   {% endif %}
+  <script type="application/json" id="recovery-tables-data">{{ recovery_tables | tojson }}</script>
   <script>
     const STATUS_TEXT = {
       recoverable: "可重建 · 文件齐全",
@@ -236,6 +292,115 @@
           btn.disabled = false;
         }
       });
+    });
+
+    // ---------- 恢复演练 ----------
+
+    function renderRecoverResult(r) {
+      const okClass = r.new_version_status === 'recoverable' ? 'success' : 'danger';
+      const statusText = STATUS_TEXT[r.new_version_status] || r.new_version_status;
+      const list = (title, paths, cls) =>
+        '<div class="kv" style="margin-top:8px">' + title + '（' + paths.length + ' 个）' +
+        (paths.length
+          ? '<ul class="filelist">' + paths.map(p =>
+              '<li class="' + cls + '">' + esc(p) + '</li>').join('') + '</ul>'
+          : '：无') + '</div>';
+      return '' +
+        '<div class="' + okClass + '">✅ 恢复演练成功：当前版 v' + r.previous_current_version +
+          ' → 新版本 <span class="newver">v' + r.new_version + '</span>' +
+          '（已追加提交 <code>' + esc(r.commit_file) + '</code>）</div>' +
+        '<div class="kv">目标旧版本 v' + r.target_version + '：新版本引用 ' +
+          r.referenced_file_count + ' 个文件，与目标版本一致' +
+          '；原样保留 ' + r.kept_files.length + ' 个。</div>' +
+        list('重新纳入（add, dataChange=true）', r.added_files, 'ok') +
+        list('移出（remove, dataChange=true）', r.removed_files, 'missing') +
+        '<div class="kv" style="margin-top:10px">用原核查逻辑重放新版本 v' + r.new_version +
+          '：<strong>' + esc(statusText) + '</strong>' +
+          (r.new_version_missing_commits && r.new_version_missing_commits.length
+            ? '；缺提交 ' + r.new_version_missing_commits.map(c => 'v' + c).join(', ') : '') +
+          '</div>' +
+        '<div class="hint" style="margin-top:6px">下方核查报告已刷新为 v' +
+          r.target_version + ' – v' + r.new_version + '，可展开明细核对新版本引用的文件。</div>';
+    }
+
+    function showRecoverError(data) {
+      let html = '<div class="danger">❌ ' + esc(data.error || '恢复演练失败') + '</div>';
+      if (data.code === 'missing_parquet' && data.missing_files && data.missing_files.length) {
+        html = '<div class="danger">❌ 目标版本引用的 Parquet 文件缺件，未写日志：' +
+          '<ul class="filelist">' + data.missing_files.map(p =>
+            '<li class="missing">✗ 缺失 ' + esc(p) + '</li>').join('') + '</ul></div>';
+      }
+      if (data.code === 'stale_current_version' &&
+          data.actual_current_version !== null && data.actual_current_version !== undefined) {
+        document.getElementById('current_version').value = data.actual_current_version;
+        const opt = recoverTable.options[recoverTable.selectedIndex];
+        if (opt) opt.dataset.current = data.actual_current_version;
+        html += '<div class="hint">本地副本实际当前版本为 v' +
+          esc(data.actual_current_version) +
+          '，已回填到“工单当前版本”；核对工单后再重新提交。</div>';
+      }
+      document.getElementById('recover-result').innerHTML = html;
+    }
+
+    const recoverTable = document.getElementById('recover-table');
+    // 初始“要恢复的旧版本”取该表查询区间起点，而不是固定 0
+    (function initTargetVersion() {
+      try {
+        const tables = JSON.parse(
+          document.getElementById('recovery-tables-data').textContent);
+        const meta = tables[recoverTable && recoverTable.value];
+        if (meta && meta.range && meta.range.length) {
+          document.getElementById('target_version').value = meta.range[0];
+        }
+      } catch (e) { /* 保持模板默认值 */ }
+    })();
+
+    function syncRecoverTable() {
+      const opt = recoverTable.options[recoverTable.selectedIndex];
+      if (!opt) return;
+      document.getElementById('current_version').value = opt.dataset.current;
+      document.getElementById('target_version').value = opt.dataset.from;
+    }
+    if (recoverTable) recoverTable.addEventListener('change', syncRecoverTable);
+
+    const recoverBtn = document.getElementById('recover-btn');
+    if (recoverBtn) recoverBtn.addEventListener('click', async () => {
+      const currentRaw = document.getElementById('current_version').value;
+      const targetRaw = document.getElementById('target_version').value;
+      const out = document.getElementById('recover-result');
+      if (currentRaw === '' || targetRaw === '') {
+        out.innerHTML = '<div class="danger">❌ 请填写工单上的当前版本与要恢复的旧版本</div>';
+        return;
+      }
+      recoverBtn.disabled = true;
+      recoverBtn.textContent = '恢复中…';
+      out.innerHTML = '<div class="kv">正在锁定表目录、校验当前版本并写入新提交…</div>';
+      try {
+        const resp = await fetch('/api/recover-sample/' + recoverTable.value, {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({
+            current_version: Number(currentRaw),
+            target_version: Number(targetRaw)
+          })
+        });
+        const data = await resp.json();
+        if (!resp.ok) { showRecoverError(data); return; }
+        out.innerHTML = renderRecoverResult(data);
+        // 成功：把当前版本推进到新版本，并在下方重放新版本核查报告
+        document.getElementById('current_version').value = data.new_version;
+        const opt = recoverTable.options[recoverTable.selectedIndex];
+        opt.dataset.current = data.new_version;
+        document.getElementById('report-root').innerHTML = renderReport(data.verification);
+        document.getElementById('from_version').value = data.target_version;
+        document.getElementById('to_version').value = data.new_version;
+        window.scrollTo({top: out.offsetTop - 40, behavior: 'smooth'});
+      } catch (e) {
+        out.innerHTML = '<div class="danger">❌ 请求恢复接口失败：' + esc(e) + '</div>';
+      } finally {
+        recoverBtn.disabled = false;
+        recoverBtn.textContent = '执行恢复演练';
+      }
     });
   </script>
 </body>

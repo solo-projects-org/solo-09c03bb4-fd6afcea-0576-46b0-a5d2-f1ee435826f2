@@ -1,3 +1,4 @@
 {"protocol": {"minReaderVersion": 1, "minWriterVersion": 2}}
+{"metaData": {"id": "00000000-0000-0000-0000-000000000000", "format": {"provider": "parquet", "options": {}}, "schemaString": "{\"type\": \"struct\", \"fields\": [{\"name\": \"id\", \"type\": \"long\", \"nullable\": true, \"metadata\": {}}, {\"name\": \"value\", \"type\": \"string\", \"nullable\": true, \"metadata\": {}}]}", "partitionColumns": [], "configuration": {}, "createdTime": 1700000000000}}
 {"add": {"path": "data/part-00000-incident.parquet", "partitionValues": {}, "size": 1024, "modificationTime": 1700000000000, "dataChange": true}}
 {"add": {"path": "data/part-00001-incident.parquet", "partitionValues": {}, "size": 1024, "modificationTime": 1700000000000, "dataChange": true}}

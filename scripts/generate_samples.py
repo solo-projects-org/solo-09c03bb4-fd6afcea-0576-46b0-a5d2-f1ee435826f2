@@ -62,6 +62,20 @@ def remove_action(path: str) -> dict:
 
 
 PROTOCOL_ACTION = {"protocol": {"minReaderVersion": 1, "minWriterVersion": 2}}
+METADATA_ACTION = {"metaData": {
+    "id": "00000000-0000-0000-0000-000000000000",
+    "format": {"provider": "parquet", "options": {}},
+    "schemaString": json.dumps({
+        "type": "struct",
+        "fields": [
+            {"name": "id", "type": "long", "nullable": True, "metadata": {}},
+            {"name": "value", "type": "string", "nullable": True, "metadata": {}},
+        ],
+    }),
+    "partitionColumns": [],
+    "configuration": {},
+    "createdTime": 1700000000000,
+}}
 
 
 def write_checkpoint(log_dir: Path, version: int,
@@ -126,7 +140,8 @@ def build_healthy() -> None:
     log_dir.mkdir(parents=True)
 
     f = lambda n: f"data/part-{n:05d}-healthy.parquet"
-    write_commit(log_dir, 0, [PROTOCOL_ACTION, add_action(f(0)), add_action(f(1))])
+    write_commit(log_dir, 0, [PROTOCOL_ACTION, METADATA_ACTION,
+                              add_action(f(0)), add_action(f(1))])
     write_commit(log_dir, 1, [add_action(f(2))])
     write_commit(log_dir, 2, [add_action(f(3)), remove_action(f(1))])
     # v2 检查点：当前活动文件 f0,f2,f3；f1 是墓碑
@@ -147,7 +162,8 @@ def build_incident() -> None:
     log_dir.mkdir(parents=True)
 
     a = lambda n: f"data/part-{n:05d}-incident.parquet"
-    write_commit(log_dir, 0, [PROTOCOL_ACTION, add_action(a(0)), add_action(a(1))])
+    write_commit(log_dir, 0, [PROTOCOL_ACTION, METADATA_ACTION,
+                              add_action(a(0)), add_action(a(1))])
     write_commit(log_dir, 1, [add_action(a(2))])
     write_commit(log_dir, 2, [add_action(a(3)), remove_action(a(1))])
     write_checkpoint(log_dir, 2, [a(0), a(2), a(3)], [a(1)])
