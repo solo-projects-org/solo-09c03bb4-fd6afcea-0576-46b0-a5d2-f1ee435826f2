@@ -8,7 +8,12 @@ services:
     environment:
       # 内置样例目录（容器内路径）；可通过挂载覆盖
       SAMPLE_ROOT: /srv/samples
+      # 恢复演练写入的表根目录，默认与样例目录一致
+      TABLE_ROOT: /srv/samples
     volumes:
-      # 把宿主任意 Delta 表目录挂进来，便于用样例之外的真实留存材料验证
-      - ./samples:/srv/samples:ro
+      # 可写挂载：恢复演练会把新提交追加到宿主机 ./samples 对应表的
+      # _delta_log 中；重新生成样表即可复位：
+      #   docker compose exec delta-recovery python -I scripts/generate_samples.py
+      # 也可把宿主机上任意 Delta 表目录挂进来，用真实留存材料验证
+      - ./samples:/srv/samples
     restart: unless-stopped

@@ -1,0 +1,2 @@
+{"add": {"path": "data/orders-005.parquet", "partitionValues": {}, "size": 1024, "modificationTime": 1700000000000, "dataChange": true}}
+{"remove": {"path": "data/orders-000.parquet", "deletionTimestamp": 1700000100000, "dataChange": true}}

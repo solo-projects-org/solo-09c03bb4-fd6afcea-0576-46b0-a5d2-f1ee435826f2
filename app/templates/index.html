@@ -25,16 +25,22 @@
     label { display: block; font-weight: 600; font-size: 13px; margin: 12px 0 5px; }
     .row { display: flex; gap: 14px; flex-wrap: wrap; }
     .row > div { flex: 1; min-width: 150px; }
-    input[type=number], input[type=file] { width: 100%; padding: 9px 10px;
+    input[type=number], input[type=file], select { width: 100%; padding: 9px 10px;
             border: 1px solid var(--line); border-radius: 7px; font-size: 14px; background: #fff; }
     .hint { color: var(--muted); font-size: 12px; margin-top: 4px; }
     button { cursor: pointer; border: none; border-radius: 7px; font-size: 14px; padding: 10px 18px; }
     .btn-primary { background: var(--blue); color: #fff; margin-top: 18px; }
     .btn-primary:disabled { background: #9db4e8; cursor: wait; }
+    .btn-danger { background: #b42318; color: #fff; margin-top: 18px; margin-left: 10px; }
+    .btn-danger:disabled { background: #e3b5b1; cursor: not-allowed; }
     .btn-sample { background: #eef2ff; color: #2b4acb; border: 1px solid #c7d2fe;
                   margin-right: 10px; margin-top: 8px; }
     .error { background: var(--red-bg); color: var(--red-fg); border: 1px solid #f3c2c2;
              border-radius: 8px; padding: 12px 16px; margin-bottom: 18px; font-size: 14px; }
+    .success { background: var(--green-bg); color: var(--green-fg); border: 1px solid #b3e2c2;
+               border-radius: 8px; padding: 12px 16px; margin-bottom: 18px; font-size: 14px; }
+    .planbox { border: 1px solid var(--line); border-radius: 8px; padding: 12px 16px;
+               background: #fafbfd; font-size: 13px; }
     .summary { display: flex; gap: 14px; flex-wrap: wrap; }
     .stat { flex: 1; min-width: 160px; border: 1px solid var(--line); border-radius: 8px;
             padding: 12px 16px; background: #fafbfd; }
@@ -68,9 +74,10 @@
 </head>
 <body>
   <header>
-    <h1>Delta Lake 版本可恢复性分析</h1>
+    <h1>Delta Lake 版本可恢复性分析 · 错单恢复演练</h1>
     <p>上传 _delta_log 留存的 JSON 提交 / 经典单文件 Parquet 检查点与现存数据文件清单，
-       逐版重放并核对快照引用，找出文件齐全、可完整重建的版本。仅支持无删除向量的表。</p>
+       逐版重放并核对快照引用；也可在本地副本上演练错单恢复：按工单追加下一版恢复提交，
+       旧日志与 Parquet 一律不改。仅支持无删除向量的表。</p>
   </header>
 
   <main>
@@ -114,6 +121,30 @@
         {% endfor %}
       </div>
       <div class="hint">样例由 Docker 镜像内 samples/ 目录提供，点击即调用后端 API 完成分析。</div>
+    </section>
+
+    <section class="card">
+      <h2>3. 错单恢复演练（向本地副本 _delta_log 追加恢复提交）</h2>
+      <div class="row">
+        <div>
+          <label for="restore-table">演练表（本地副本）</label>
+          <select id="restore-table"></select>
+        </div>
+        <div>
+          <label for="restore-current">工单当前版</label>
+          <input type="number" id="restore-current" min="0" value="3">
+        </div>
+        <div>
+          <label for="restore-target">要恢复的旧版</label>
+          <input type="number" id="restore-target" min="0" value="1">
+        </div>
+      </div>
+      <div class="hint">仅处理从 0 版起 JSON 提交连续、元数据不变的无分区表
+        （协议限 minReaderVersion=1 / minWriterVersion=2）。恢复只追加下一版提交，
+        让新版本引用的文件与目标旧版一致；错单所在版本保留供追查，旧日志与 Parquet 一律不改。</div>
+      <button class="btn-primary" id="plan-btn">预检恢复方案</button>
+      <button class="btn-danger" id="confirm-btn" disabled>确认恢复（追加下一版提交）</button>
+      <div id="restore-result" style="margin-top:14px"></div>
     </section>
 
     <section id="report-root"></section>
@@ -237,6 +268,154 @@
         }
       });
     });
+
+    // ---------- 错单恢复演练 ----------
+    const planBtn = document.getElementById('plan-btn');
+    const confirmBtn = document.getElementById('confirm-btn');
+    const restoreResult = document.getElementById('restore-result');
+    let plannedTicket = null;  // 预检通过的工单参数；输入一变即作废
+
+    function restoreInputs() {
+      return {
+        table: document.getElementById('restore-table').value,
+        current_version: Number(document.getElementById('restore-current').value),
+        target_version: Number(document.getElementById('restore-target').value)
+      };
+    }
+
+    function invalidatePlan() {
+      plannedTicket = null;
+      confirmBtn.disabled = true;
+    }
+    ['restore-table', 'restore-current', 'restore-target'].forEach(id => {
+      document.getElementById(id).addEventListener('change', invalidatePlan);
+      document.getElementById(id).addEventListener('input', invalidatePlan);
+    });
+
+    async function loadTables() {
+      try {
+        const resp = await fetch('/api/tables');
+        const data = await resp.json();
+        const sel = document.getElementById('restore-table');
+        const prev = sel.value;
+        sel.innerHTML = '';
+        (data.tables || []).forEach(t => {
+          const opt = document.createElement('option');
+          opt.value = t.name;
+          opt.textContent = t.name +
+            (t.latest_version === null ? '（无提交）' : '（最新 v' + t.latest_version + '）');
+          sel.appendChild(opt);
+        });
+        if (prev) sel.value = prev;
+      } catch (e) { /* 列表加载失败不阻塞页面其余功能 */ }
+    }
+
+    function renderRestoreError(data) {
+      let html = '<div class="error">❌ ' + esc(data.error || '恢复请求被拒绝') + '</div>';
+      if (data.missing_files && data.missing_files.length) {
+        html += '<div class="planbox"><strong>目标版缺失的 Parquet（未写入任何日志）：</strong>' +
+          '<ul class="filelist">' +
+          data.missing_files.map(p => '<li class="missing">✗ ' + esc(p) + '</li>').join('') +
+          '</ul></div>';
+      }
+      restoreResult.innerHTML = html;
+    }
+
+    function renderPlan(p) {
+      const rm = p.to_remove.length
+        ? '<ul class="filelist">' +
+          p.to_remove.map(x => '<li class="missing">− ' + esc(x) + '</li>').join('') + '</ul>'
+        : '<span class="kv">无</span>';
+      const ra = p.to_readd.length
+        ? '<ul class="filelist">' +
+          p.to_readd.map(a => '<li class="ok">＋ ' + esc(a.path) + '</li>').join('') + '</ul>'
+        : '<span class="kv">无</span>';
+      restoreResult.innerHTML =
+        '<div class="planbox">' +
+        '<div><strong>预检通过：</strong>将在 _delta_log 追加 <strong>v' + p.new_version +
+          '</strong>，使新版本快照与 v' + p.target_version + ' 一致（当前 v' +
+          p.current_version + ' 引用 ' + p.current_file_count + ' 个文件，目标 v' +
+          p.target_version + ' 引用 ' + p.target_file_count + ' 个）。</div>' +
+        '<div style="margin-top:8px">不再引用（remove，dataChange=true）：' + rm + '</div>' +
+        '<div style="margin-top:8px">重新纳入（沿用目标版 add 字段，dataChange=true）：' + ra + '</div>' +
+        '<div class="hint" style="margin-top:8px">确认前若当前版发生变化，提交会被拒绝；' +
+          '同一当前版最多成功一笔。</div>' +
+        '</div>';
+    }
+
+    function renderRestoreSuccess(r) {
+      restoreResult.innerHTML =
+        '<div class="success">✅ 恢复完成：已追加 <strong>' + esc(r.commit_file) +
+          '</strong>，新版本 <strong>v' + r.new_version + '</strong> 的快照引用与 v' +
+          r.target_version + ' 一致（remove ' + r.removed.length + ' 个，重新纳入 ' +
+          r.readded.length + ' 个）。错单所在版本保留在日志中供追查。</div>' +
+        '<button class="btn-sample" id="replay-btn">在核查页重放 v0–v' + r.new_version + '</button>';
+      document.getElementById('replay-btn').addEventListener('click', async () => {
+        try {
+          const resp = await fetch('/api/analyze-sample/' + r.table, {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({from_version: 0, to_version: r.new_version})
+          });
+          const data = await resp.json();
+          if (!resp.ok) { showError(data.error || '核查页重放失败'); return; }
+          document.getElementById('report-root').innerHTML = renderReport(data);
+          document.getElementById('from_version').value = 0;
+          document.getElementById('to_version').value = r.new_version;
+          window.scrollTo({top: document.body.scrollHeight, behavior: 'smooth'});
+        } catch (e) {
+          showError('核查页重放请求失败：' + e);
+        }
+      });
+    }
+
+    planBtn.addEventListener('click', async () => {
+      invalidatePlan();
+      planBtn.disabled = true;
+      try {
+        const payload = restoreInputs();
+        const resp = await fetch('/api/restore/plan', {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify(payload)
+        });
+        const data = await resp.json();
+        if (!resp.ok) { renderRestoreError(data); return; }
+        renderPlan(data);
+        plannedTicket = payload;
+        confirmBtn.disabled = false;
+      } catch (e) {
+        renderRestoreError({error: '预检请求失败：' + e});
+      } finally {
+        planBtn.disabled = false;
+      }
+    });
+
+    confirmBtn.addEventListener('click', async () => {
+      if (!plannedTicket) return;
+      confirmBtn.disabled = true;
+      try {
+        const resp = await fetch('/api/restore/confirm', {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify(plannedTicket)
+        });
+        const data = await resp.json();
+        if (!resp.ok) {
+          renderRestoreError(data);
+          invalidatePlan();  // 当前版可能已变，强制重新预检
+          return;
+        }
+        renderRestoreSuccess(data);
+        invalidatePlan();
+        loadTables();  // 刷新下拉框里的最新版本号
+      } catch (e) {
+        renderRestoreError({error: '确认请求失败：' + e});
+        invalidatePlan();
+      }
+    });
+
+    loadTables();
   </script>
 </body>
 </html>

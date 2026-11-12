@@ -1,0 +1,4 @@
+{"protocol": {"minReaderVersion": 1, "minWriterVersion": 2}}
+{"metaData": {"id": "b4d0c3f0-0000-4000-8000-badordersdemo", "format": {"provider": "parquet", "options": {}}, "schemaString": "{\"type\": \"struct\", \"fields\": [{\"name\": \"order_id\", \"type\": \"string\", \"nullable\": true, \"metadata\": {}}, {\"name\": \"amount\", \"type\": \"double\", \"nullable\": true, \"metadata\": {}}]}", "partitionColumns": [], "configuration": {}, "createdTime": 1700000000000}}
+{"add": {"path": "data/orders-000.parquet", "partitionValues": {}, "size": 2048, "modificationTime": 1700000000000, "dataChange": true}}
+{"add": {"path": "data/orders-001.parquet", "partitionValues": {}, "size": 1024, "modificationTime": 1700000000000, "dataChange": true}}

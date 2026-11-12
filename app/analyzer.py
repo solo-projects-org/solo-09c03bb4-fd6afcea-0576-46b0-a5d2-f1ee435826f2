@@ -91,7 +91,7 @@ def _decode_utf8(data: bytes, source: str) -> str:
         raise AnalyzerError(f"{source} 不是合法的 UTF-8 文本：{exc}") from exc
 
 
-def _iter_json_objects(text: str, source: str):
+def iter_json_objects(text: str, source: str):
     """Delta 提交是 ndjson（每行一个动作对象），同时兼容整体 JSON 数组。"""
     stripped = text.strip()
     if not stripped:
@@ -144,7 +144,7 @@ def parse_commit(version: int, data: bytes, source: str) -> ParsedCommit:
     """解析一个 JSON 提交文件。"""
     parsed = ParsedCommit(version=version, source=source)
     text = _decode_utf8(data, source)
-    for obj in _iter_json_objects(text, source):
+    for obj in iter_json_objects(text, source):
         if not isinstance(obj, dict):
             continue
         if "add" in obj and isinstance(obj["add"], dict):

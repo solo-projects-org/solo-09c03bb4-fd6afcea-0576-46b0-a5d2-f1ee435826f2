@@ -1,0 +1,2 @@
+{"add": {"path": "data/orders-bad-003.parquet", "partitionValues": {}, "size": 1024, "modificationTime": 1700000000000, "dataChange": true}}
+{"add": {"path": "data/orders-bad-004.parquet", "partitionValues": {}, "size": 1024, "modificationTime": 1700000000000, "dataChange": true}}

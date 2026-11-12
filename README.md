@@ -1,4 +1,4 @@
-# Delta Lake 版本可恢复性分析网页
+# Delta Lake 版本可恢复性分析 + 错单恢复演练网页
 
 对象存储误删文件后，湖仓值班员用本工具查清一张 Delta Lake 表还有哪些
 版本可以完整回退。值班员在网页上填写版本区间，上传三类材料：
@@ -17,16 +17,47 @@
 **仅处理无删除向量（Deletion Vector）的表**：协议特性或任何 add/remove
 动作中出现 `deletionVector` 时直接拒绝分析，并指出来源文件。
 
+## 错单恢复演练
+
+一批错单写进 Delta Lake 后，值班员可以在**本地副本**上演练恢复：错单所在
+版本保留在日志中供追查，旧提交与 Parquet 数据文件一律不改。页面第 3 节
+选择演练表，按工单填写**当前版**和**要恢复的旧版**：
+
+1. **预检恢复方案**（`POST /api/restore/plan`）：只校验并展示方案，不写任何
+   文件——将追加的新版本号、不再引用的文件（remove）、重新纳入的文件（add）；
+2. **确认恢复**（`POST /api/restore/confirm`）：向 `_delta_log` 追加下一版
+   JSON 提交，使新版本引用的文件与目标旧版完全一致。成功后页面显示新版本号，
+   并可一键在核查页重放该版本。
+
+适用范围（任一不满足即拒绝，不写任何文件）：
+
+- 从 0 版起 **JSON 提交连续**（检查点不参与恢复重放）；
+- **无分区表**：`metaData.partitionColumns` 为空，且所有 add 的
+  `partitionValues` 为空；
+- **元数据不变**：全部版本的 metaData 动作完全一致；
+- 协议限 **minReaderVersion=1、minWriterVersion=2**，无额外 reader/writer 特性；
+- 无删除向量（与核查页一致的硬拦截）。
+
+行为细则：
+
+- 目标版引用的 Parquet 若有缺件，**列出全部缺失路径，不写日志**；
+- 重新纳入的文件**沿用目标版的 add 字段**（size、modificationTime 等原样
+  保留），增删动作都标记 `dataChange=true`；
+- 确认时重新校验当前版，**当前版已变就拒绝**（HTTP 409）；新提交先完整写入
+  临时文件并 fsync，再以硬链接原子生效（已存在则失败）——即使确认请求落在
+  不同服务进程，**同一当前版也最多成功一笔**，且新提交写完整才可见。
+
 ## 目录结构
 
 ```
 app/
-  analyzer.py            # 核心逻辑：日志解析、逐版重放、文件核对、DV 拦截
-  web.py                 # Flask 路由：上传分析 + 本地样例 API
-  templates/index.html   # 单页界面（服务端渲染与 JS 渲染共用）
-scripts/generate_samples.py  # 用 PyArrow 构造两套样例 Delta 表
-samples/                 # 本地样例（健康表 / 误删事故表）
-tests/                   # pytest：27 个核心逻辑与路由测试
+  analyzer.py            # 核查核心：日志解析、逐版重放、文件核对、DV 拦截
+  recovery.py            # 恢复核心：约束校验、快照重放、原子追加恢复提交
+  web.py                 # Flask 路由：上传分析 + 样例 API + 恢复演练 API
+  templates/index.html   # 单页界面（核查 + 恢复演练）
+scripts/generate_samples.py  # 用 PyArrow 构造三套样例 Delta 表
+samples/                 # 本地样例（健康表 / 误删事故表 / 错单演练表）
+tests/                   # pytest：核心逻辑与路由测试
 Dockerfile / docker-compose.yml
 ```
 
@@ -37,7 +68,15 @@ docker compose up --build
 # 打开 http://localhost:8000
 ```
 
-页面下半部有两个按钮可**直接加载本地样例**，无需手动选择文件：
+`./samples` 以**可写**方式挂载进容器：恢复演练会把新提交追加到宿主机
+`samples/<表>/_delta_log/` 中，核查页随即可以重放到新版本。演练完想复位
+样表，重新生成即可：
+
+```bash
+docker compose exec delta-recovery python -I scripts/generate_samples.py
+```
+
+页面下半部的按钮可**直接加载本地样例**，无需手动选择文件：
 
 - **健康表样例（v0–v4）**：含 v2 检查点，5 个版本全部可重建；
 - **误删事故样例（v0–v5）**：v3 提交丢失、数据文件 `part-00004` /
@@ -51,7 +90,11 @@ docker compose up --build
   | v5 | 🟠 缺数据文件 | 缺 `part-00004` 与 `part-00006` |
 
   目录中还放了一个分片检查点残片，工具会明确列为“已忽略：仅支持经典
-  单文件检查点”。
+  单文件检查点”。该表提交不连续，恢复演练会被拒绝，可用来验证拦截行为。
+- **错单演练表（v0–v3）**：v2 写入一批错单（`orders-bad-003/004`），
+  v3 是错单后的正常变更。演练工单：当前版 **v3**、要恢复的旧版 **v1**。
+  确认后追加 v4：移除错单批次与 v3 新文件的引用，并把 v3 删掉的
+  `orders-000` 按目标版的 add 字段重新纳入；v4 快照与 v1 完全一致。
 
 ## 手工上传分析
 
@@ -87,4 +130,7 @@ python -I -m pytest tests -q
 - **只认经典单文件检查点**：分片检查点（`N.checkpoint.K.M.parquet`）
   与 `_last_checkpoint` 指针不参与重放，只在页面登记忽略原因；
 - **DV 硬拦截**：删除向量会让“文件存在 ≠ 行数据完整”，超出本工具
-  基于文件清单的核对能力，因此在协议层和动作层双重检测并拒绝。
+  基于文件清单的核对能力，因此在协议层和动作层双重检测并拒绝；
+- **恢复只追加不改写**：恢复提交只往 `_delta_log` 追加下一版 JSON，
+  错单版本留在日志里供追查；临时文件 + 硬链接原子生效，既保证
+  “写完整才可见”，也保证多进程下同一当前版最多成功一笔。

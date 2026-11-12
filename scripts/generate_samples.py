@@ -63,6 +63,22 @@ def remove_action(path: str) -> dict:
 
 PROTOCOL_ACTION = {"protocol": {"minReaderVersion": 1, "minWriterVersion": 2}}
 
+# 错单演练表的元数据（无分区）；恢复演练要求元数据自始至终不变
+BAD_ORDERS_METADATA = {"metaData": {
+    "id": "b4d0c3f0-0000-4000-8000-badordersdemo",
+    "format": {"provider": "parquet", "options": {}},
+    "schemaString": json.dumps({
+        "type": "struct",
+        "fields": [
+            {"name": "order_id", "type": "string", "nullable": True, "metadata": {}},
+            {"name": "amount", "type": "double", "nullable": True, "metadata": {}},
+        ],
+    }),
+    "partitionColumns": [],
+    "configuration": {},
+    "createdTime": 1700000000000,
+}}
+
 
 def write_checkpoint(log_dir: Path, version: int,
                      active_paths: list[str], tombstone_paths: list[str]) -> None:
@@ -171,9 +187,45 @@ def build_incident() -> None:
     write_manifest(table_dir, [a(0), a(1), a(2), a(3), a(5)])
 
 
+def build_bad_orders() -> None:
+    """错单演练表：v2 写入一批错单，v3 是错单后的正常变更。
+
+    演练工单：当前版 v3，恢复到 v1（错单批次写入前）。恢复提交 v4 应
+    移除 bad-003 / bad-004 / 005 的引用，并把 v3 删掉的 orders-000 按
+    目标版的 add 字段重新纳入。所有数据文件均在，可完整演练成功路径。
+    """
+    table_dir = SAMPLES / "bad_orders_table"
+    reset_dir(table_dir)
+    log_dir = table_dir / "_delta_log"
+    log_dir.mkdir(parents=True)
+
+    o = lambda n: f"data/orders-{n}.parquet"
+
+    def add_sized(path: str, size: int) -> dict:
+        action = add_action(path)
+        action["add"]["size"] = size
+        return action
+
+    # orders-000 用与众不同的 size，便于验证恢复提交沿用了目标版的 add 字段
+    write_commit(log_dir, 0, [PROTOCOL_ACTION, BAD_ORDERS_METADATA,
+                              add_sized(o("000"), 2048), add_action(o("001"))])
+    write_commit(log_dir, 1, [add_action(o("002"))])
+    # v2：错单批次写入（保留在日志中供追查，恢复时只是不再引用）
+    write_commit(log_dir, 2, [add_action(o("bad-003")), add_action(o("bad-004"))])
+    # v3：错单之后的正常变更
+    write_commit(log_dir, 3, [add_action(o("005")), remove_action(o("000"))])
+
+    (log_dir / "_last_checkpoint").write_text(json.dumps({
+        "version": 3, "size": 0}), encoding="utf-8")
+    # orders-000 虽在 v3 被逻辑删除，物理文件仍在（恢复时要重新纳入它）
+    write_manifest(table_dir,
+                   [o(n) for n in ("000", "001", "002", "bad-003", "bad-004", "005")])
+
+
 def main() -> None:
     build_healthy()
     build_incident()
+    build_bad_orders()
     print(f"样例已生成于 {SAMPLES}")
     for table in sorted(SAMPLES.iterdir()):
         if table.is_dir():
